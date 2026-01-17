@@ -451,13 +451,31 @@ app.get("/api/debug/commands", async (req, res) => {
   }
 });
 
-// Trigger full sync (backfill) for a device
+// Trigger full sync (backfill) for a device with optional date range
 app.post("/api/devices/:sn/sync", async (req, res) => {
   const { sn } = req.params;
-  const { command } = req.body || {};
+  const { command, start_date, end_date } = req.body || {};
 
   try {
-    const syncCommand = command || "C:99:DATA QUERY ATTLOG";
+    let syncCommand;
+
+    if (command) {
+      // Use custom command if provided
+      syncCommand = command;
+    } else if (start_date && end_date) {
+      // Build DATA QUERY with date filter
+      // Format: C:ID:DATA QUERY tablename=ATTLOG,fielddesc=*,filter=TIME>=StartDate AND TIME<=EndDate
+      syncCommand = `C:99:DATA QUERY tablename=ATTLOG,fielddesc=*,filter=TIME>=${start_date} AND TIME<=${end_date}`;
+    } else if (start_date) {
+      // Only start date - get everything from that date onwards
+      syncCommand = `C:99:DATA QUERY tablename=ATTLOG,fielddesc=*,filter=TIME>=${start_date}`;
+    } else if (end_date) {
+      // Only end date - get everything up to that date
+      syncCommand = `C:99:DATA QUERY tablename=ATTLOG,fielddesc=*,filter=TIME<=${end_date}`;
+    } else {
+      // No filter - get all data
+      syncCommand = "C:99:DATA QUERY ATTLOG";
+    }
 
     // Queue the command
     const result = await pool.query(
