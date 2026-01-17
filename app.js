@@ -221,25 +221,27 @@ app.post("/iclock/cdata", async (req, res) => {
 
 // Device status update (heartbeat) and command retrieval
 app.all("/iclock/getrequest", async (req, res) => {
-  const { SN } = req.query;
+  const sn = req.query.SN || req.query.sn;
 
-  if (SN) {
+  if (sn) {
     // Update status
     await pool.query(
       "UPDATE devices SET status = $1, last_activity = CURRENT_TIMESTAMP WHERE device_sn = $2",
-      ["online", SN]
+      ["online", sn]
     );
 
-    // Check for pending commands
+    // Check for pending commands (case insensitive)
     try {
       const pendingCommands = await pool.query(
-        "SELECT id, command FROM device_commands WHERE device_sn = $1 AND status = 'pending' ORDER BY created_at LIMIT 1",
-        [SN]
+        "SELECT id, command FROM device_commands WHERE LOWER(device_sn) = LOWER($1) AND status = 'pending' ORDER BY created_at LIMIT 1",
+        [sn]
       );
+
+      console.log(`Heartbeat from ${sn}. Pending commands: ${pendingCommands.rows.length}`);
 
       if (pendingCommands.rows.length > 0) {
         const cmd = pendingCommands.rows[0];
-        console.log(`Sending command to device ${SN}: ${cmd.command}`);
+        console.log(`Sending command to device ${sn}: ${cmd.command}`);
 
         // Update status to sent IMMEDIATELY to prevent double sending
         await pool.query(
@@ -254,7 +256,7 @@ app.all("/iclock/getrequest", async (req, res) => {
       console.error("Error checking pending commands:", error);
     }
   } else {
-    console.log(`Heartbeat received but no SN in query: ${JSON.stringify(req.query)}`);
+    console.log(`Heartbeat received but no SN/sn in query: ${JSON.stringify(req.query)}`);
   }
 
   res.send("OK");
@@ -437,10 +439,22 @@ app.get("/api/devices", async (req, res) => {
   }
 });
 
+// Get recent commands for debugging
+app.get("/api/debug/commands", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM device_commands ORDER BY created_at DESC LIMIT 50"
+    );
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Trigger full sync (backfill) for a device
 app.post("/api/devices/:sn/sync", async (req, res) => {
   const { sn } = req.params;
-  const { command } = req.body;
+  const { command } = req.body || {};
 
   try {
     const syncCommand = command || "C:99:DATA QUERY ATTLOG";
