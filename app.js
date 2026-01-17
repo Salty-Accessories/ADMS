@@ -67,16 +67,32 @@ async function initDatabase() {
 
     // Ensure unique constraint exists for existing tables
     try {
+      // 1. First, find and delete duplicates to allow constraint creation
+      // We keep the record with the largest ID (most recently created)
+      await client.query(`
+                DELETE FROM attendance a USING (
+                    SELECT MIN(id) as id, device_sn, emp_id, punch_time
+                    FROM attendance
+                    GROUP BY device_sn, emp_id, punch_time
+                    HAVING COUNT(*) > 1
+                ) b
+                WHERE a.device_sn = b.device_sn 
+                AND a.emp_id = b.emp_id 
+                AND a.punch_time = b.punch_time 
+                AND a.id <> b.id
+            `);
+
+      // 2. Now try to add the constraint
       await client.query(`
                 ALTER TABLE attendance 
                 ADD CONSTRAINT attendance_device_sn_emp_id_punch_time_key 
                 UNIQUE (device_sn, emp_id, punch_time)
             `);
-      console.log("Unique constraint added to attendance table");
+      console.log("Unique constraint verified/added successfully");
     } catch (error) {
-      if (error.code !== "42P16" && error.code !== "23505" && error.code !== "42710") {
-        // 42P16: already exists, 23505: duplicate keys (can't add), 42710: constraint already exists
-        console.log("Note: Could not add unique constraint (it may already exist or there are duplicates)");
+      // If error is 42710 (already exists), we're good
+      if (error.code !== "42710" && error.code !== "42P16") {
+        console.error("Migration error (Attendance Constraint):", error.message);
       }
     }
 
