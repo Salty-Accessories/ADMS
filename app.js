@@ -15,6 +15,17 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
 
+// Global Logger for Device Debugging
+app.use((req, res, next) => {
+  if (req.path.startsWith("/iclock/")) {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+    if (req.method === "POST" && req.body) {
+      console.log(`Body: ${req.body.toString().substring(0, 500)}...`);
+    }
+  }
+  next();
+});
+
 // Database connection pool (PostgreSQL)
 const pool = new Pool({
   host: process.env.DB_HOST,
@@ -213,7 +224,6 @@ app.all("/iclock/getrequest", async (req, res) => {
   const { SN } = req.query;
 
   if (SN) {
-    console.log(`Heartbeat from device: ${SN} [${req.method}]`);
     // Update status
     await pool.query(
       "UPDATE devices SET status = $1, last_activity = CURRENT_TIMESTAMP WHERE device_sn = $2",
@@ -231,9 +241,9 @@ app.all("/iclock/getrequest", async (req, res) => {
         const cmd = pendingCommands.rows[0];
         console.log(`Sending command to device ${SN}: ${cmd.command}`);
 
-        // Update status to sent
+        // Update status to sent IMMEDIATELY to prevent double sending
         await pool.query(
-          "UPDATE device_commands SET status = 'sent' WHERE id = $1",
+          "UPDATE device_commands SET status = 'sent', created_at = CURRENT_TIMESTAMP WHERE id = $1",
           [cmd.id]
         );
 
@@ -245,6 +255,31 @@ app.all("/iclock/getrequest", async (req, res) => {
     }
   } else {
     console.log(`Heartbeat received but no SN in query: ${JSON.stringify(req.query)}`);
+  }
+
+  res.send("OK");
+});
+
+// Endpoint for device to report command execution results
+app.post("/iclock/devicecmd", async (req, res) => {
+  const { SN } = req.query;
+  const body = req.body;
+  console.log(`Device command response from ${SN}: ${body}`);
+
+  // Example body: ID=99&Return=0
+  try {
+    const parts = body.toString().split("&");
+    const idPart = parts.find(p => p.startsWith("ID="));
+    if (idPart) {
+      const cmdId = idPart.split("=")[1];
+      // Mark as completed if return is 0 (Success)
+      await pool.query(
+        "UPDATE device_commands SET status = 'completed' WHERE device_sn = $1 AND id = $2",
+        [SN, cmdId]
+      );
+    }
+  } catch (error) {
+    console.error("Error processing device command response:", error);
   }
 
   res.send("OK");
@@ -407,6 +442,19 @@ app.post("/api/devices/:sn/sync", async (req, res) => {
   const { sn } = req.params;
 
   try {
+    // Check if there's already a pending sync to avoid duplicates
+    const existing = await pool.query(
+      "SELECT id FROM device_commands WHERE device_sn = $1 AND status = 'pending' AND command LIKE '%DATA QUERY%'",
+      [sn]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.json({
+        success: true,
+        message: `A sync command is already pending for device ${sn}.`,
+      });
+    }
+
     // Queue the DATA QUERY command
     await pool.query(
       "INSERT INTO device_commands (device_sn, command, status) VALUES ($1, $2, $3)",
