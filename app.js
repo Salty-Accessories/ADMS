@@ -15,13 +15,13 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
 
-// Global Logger for Device Debugging
+// Global Logger for ALL requests
 app.use((req, res, next) => {
-  if (req.path.startsWith("/iclock/")) {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
-    if (req.method === "POST" && req.body) {
-      console.log(`Body: ${req.body.toString().substring(0, 500)}...`);
-    }
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${req.method} ${req.originalUrl}`);
+  if (req.method === "POST" && req.body) {
+    const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    console.log(`  Body: ${bodyStr.substring(0, 300)}...`);
   }
   next();
 });
