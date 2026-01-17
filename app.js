@@ -209,10 +209,11 @@ app.post("/iclock/cdata", async (req, res) => {
 });
 
 // Device status update (heartbeat) and command retrieval
-app.post("/iclock/getrequest", async (req, res) => {
+app.all("/iclock/getrequest", async (req, res) => {
   const { SN } = req.query;
 
   if (SN) {
+    console.log(`Heartbeat from device: ${SN} [${req.method}]`);
     // Update status
     await pool.query(
       "UPDATE devices SET status = $1, last_activity = CURRENT_TIMESTAMP WHERE device_sn = $2",
@@ -242,6 +243,8 @@ app.post("/iclock/getrequest", async (req, res) => {
     } catch (error) {
       console.error("Error checking pending commands:", error);
     }
+  } else {
+    console.log(`Heartbeat received but no SN in query: ${JSON.stringify(req.query)}`);
   }
 
   res.send("OK");
