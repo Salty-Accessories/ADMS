@@ -440,30 +440,22 @@ app.get("/api/devices", async (req, res) => {
 // Trigger full sync (backfill) for a device
 app.post("/api/devices/:sn/sync", async (req, res) => {
   const { sn } = req.params;
+  const { command } = req.body;
 
   try {
-    // Check if there's already a pending sync to avoid duplicates
-    const existing = await pool.query(
-      "SELECT id FROM device_commands WHERE device_sn = $1 AND status = 'pending' AND command LIKE '%DATA QUERY%'",
-      [sn]
-    );
+    const syncCommand = command || "C:99:DATA QUERY ATTLOG";
 
-    if (existing.rows.length > 0) {
-      return res.json({
-        success: true,
-        message: `A sync command is already pending for device ${sn}.`,
-      });
-    }
-
-    // Queue the DATA QUERY command
-    await pool.query(
-      "INSERT INTO device_commands (device_sn, command, status) VALUES ($1, $2, $3)",
-      [sn, "C:99:DATA QUERY - tablename=ATTLOG,fielddesc=*,filter=*", "pending"]
+    // Queue the command
+    const result = await pool.query(
+      "INSERT INTO device_commands (device_sn, command, status) VALUES ($1, $2, $3) RETURNING id",
+      [sn, syncCommand, "pending"]
     );
 
     res.json({
       success: true,
-      message: `Sync command queued for device ${sn}. It will be sent on next heartbeat.`,
+      message: `Command queued for device ${sn}. It will be sent on next heartbeat.`,
+      command: syncCommand,
+      command_id: result.rows[0].id
     });
   } catch (error) {
     console.error("Error queueing sync command:", error);
