@@ -71,6 +71,7 @@ The device will automatically push attendance data to `/iclock/cdata`
 | GET | `/api/attendance` | Get attendance records |
 | GET | `/api/attendance/today` | Today's summary |
 | GET | `/api/devices` | List connected devices |
+| POST | `/api/devices/:sn/sync` | Trigger historical data sync (backfill) |
 | GET | `/api/reports/daily` | Daily attendance report |
 
 ### Query Parameters

@@ -60,6 +60,17 @@ async function initDatabase() {
                 punch_state INT, -- 0=CheckIn, 1=CheckOut, 2=Break, 3=Overtime
                 verify_mode INT, -- 0=Password, 1=Fingerprint, 15=Face
                 work_code VARCHAR(10),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(device_sn, emp_id, punch_time)
+            )
+        `);
+
+    await client.query(`
+            CREATE TABLE IF NOT EXISTS device_commands (
+                id SERIAL PRIMARY KEY,
+                device_sn VARCHAR(50),
+                command TEXT,
+                status VARCHAR(10) DEFAULT 'pending', -- pending, sent, completed
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
@@ -126,7 +137,8 @@ app.post("/iclock/cdata", async (req, res) => {
 
           await pool.query(
             `INSERT INTO attendance (device_sn, emp_id, punch_time, punch_state, verify_mode, work_code) 
-                         VALUES ($1, $2, $3, $4, $5, $6)`,
+                         VALUES ($1, $2, $3, $4, $5, $6)
+                         ON CONFLICT (device_sn, emp_id, punch_time) DO NOTHING`,
             [
               req.query.SN || "UNKNOWN",
               empId,
@@ -143,7 +155,8 @@ app.post("/iclock/cdata", async (req, res) => {
         const [empId, timestamp, punchState, verifyMode, workCode] = parts;
         await pool.query(
           `INSERT INTO attendance (device_sn, emp_id, punch_time, punch_state, verify_mode, work_code) 
-                     VALUES ($1, $2, $3, $4, $5, $6)`,
+                     VALUES ($1, $2, $3, $4, $5, $6)
+                     ON CONFLICT (device_sn, emp_id, punch_time) DO NOTHING`,
           [
             req.query.SN || "UNKNOWN",
             empId,
@@ -164,18 +177,85 @@ app.post("/iclock/cdata", async (req, res) => {
   }
 });
 
-// Device status update (heartbeat)
+// Device status update (heartbeat) and command retrieval
 app.post("/iclock/getrequest", async (req, res) => {
   const { SN } = req.query;
 
   if (SN) {
+    // Update status
     await pool.query(
       "UPDATE devices SET status = $1, last_activity = CURRENT_TIMESTAMP WHERE device_sn = $2",
       ["online", SN]
     );
+
+    // Check for pending commands
+    try {
+      const pendingCommands = await pool.query(
+        "SELECT id, command FROM device_commands WHERE device_sn = $1 AND status = 'pending' ORDER BY created_at LIMIT 1",
+        [SN]
+      );
+
+      if (pendingCommands.rows.length > 0) {
+        const cmd = pendingCommands.rows[0];
+        console.log(`Sending command to device ${SN}: ${cmd.command}`);
+
+        // Update status to sent
+        await pool.query(
+          "UPDATE device_commands SET status = 'sent' WHERE id = $1",
+          [cmd.id]
+        );
+
+        // Send command to device
+        return res.send(cmd.command);
+      }
+    } catch (error) {
+      console.error("Error checking pending commands:", error);
+    }
   }
 
   res.send("OK");
+});
+
+// Endpoint to receive data requested via DATA QUERY
+app.post("/iclock/querydata", async (req, res) => {
+  const { SN } = req.query;
+  const data = req.body;
+  console.log(`Received query data from device ${SN}`);
+
+  try {
+    const lines = data.toString().trim().split("\n");
+
+    for (const line of lines) {
+      const parts = line.split("\t");
+      if (parts.length >= 4) {
+        const [empId, timestamp, punchState, verifyMode, workCode] = parts;
+        await pool.query(
+          `INSERT INTO attendance (device_sn, emp_id, punch_time, punch_state, verify_mode, work_code) 
+                     VALUES ($1, $2, $3, $4, $5, $6)
+                     ON CONFLICT (device_sn, emp_id, punch_time) DO NOTHING`,
+          [
+            SN || "UNKNOWN",
+            empId,
+            timestamp,
+            parseInt(punchState) || 0,
+            parseInt(verifyMode) || 0,
+            workCode || "",
+          ]
+        );
+      }
+    }
+
+    // Mark commands as completed for this device
+    await pool.query(
+      "UPDATE device_commands SET status = 'completed' WHERE device_sn = $1 AND status = 'sent'",
+      [SN]
+    );
+
+    res.send("OK");
+  } catch (error) {
+    console.error("Error processing query data:", error);
+    res.status(500).send("ERROR");
+  }
 });
 
 // API Endpoints for Web Dashboard
@@ -285,6 +365,27 @@ app.get("/api/devices", async (req, res) => {
   } catch (error) {
     console.error("Error fetching devices:", error);
     res.status(500).json({ error: "Failed to fetch devices" });
+  }
+});
+
+// Trigger full sync (backfill) for a device
+app.post("/api/devices/:sn/sync", async (req, res) => {
+  const { sn } = req.params;
+
+  try {
+    // Queue the DATA QUERY command
+    await pool.query(
+      "INSERT INTO device_commands (device_sn, command, status) VALUES ($1, $2, $3)",
+      [sn, "C:99:DATA QUERY - tablename=ATTLOG,fielddesc=*,filter=*", "pending"]
+    );
+
+    res.json({
+      success: true,
+      message: `Sync command queued for device ${sn}. It will be sent on next heartbeat.`,
+    });
+  } catch (error) {
+    console.error("Error queueing sync command:", error);
+    res.status(500).json({ error: "Failed to queue sync command" });
   }
 });
 
