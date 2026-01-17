@@ -65,6 +65,21 @@ async function initDatabase() {
             )
         `);
 
+    // Ensure unique constraint exists for existing tables
+    try {
+      await client.query(`
+                ALTER TABLE attendance 
+                ADD CONSTRAINT attendance_device_sn_emp_id_punch_time_key 
+                UNIQUE (device_sn, emp_id, punch_time)
+            `);
+      console.log("Unique constraint added to attendance table");
+    } catch (error) {
+      if (error.code !== "42P16" && error.code !== "23505" && error.code !== "42710") {
+        // 42P16: already exists, 23505: duplicate keys (can't add), 42710: constraint already exists
+        console.log("Note: Could not add unique constraint (it may already exist or there are duplicates)");
+      }
+    }
+
     await client.query(`
             CREATE TABLE IF NOT EXISTS device_commands (
                 id SERIAL PRIMARY KEY,
